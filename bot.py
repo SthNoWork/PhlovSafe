@@ -15,16 +15,10 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, WebAppInfo
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 from config import TELEGRAM_BOT_TOKEN, WEB_APP_URL
-from services.routing import get_route, format_navigation_link
+from services.routing import get_route, search_places, format_navigation_link
 from services.risk_evaluator import evaluate_route_risk
 
 logging.basicConfig(level=logging.INFO)
-
-PRESET_ROUTES = {
-    "1": {"name": "RUPP (Toul Kork) -> BKK1", "orig": (11.5694, 104.8918), "dest": (11.5492, 104.9255)},
-    "2": {"name": "Riverside (Daun Penh) -> Aeon 3 (Mean Chey)", "orig": (11.5670, 104.9304), "dest": (11.4988, 104.9247)},
-    "3": {"name": "Russian Market (TTP) -> Chroy Changvar", "orig": (11.5375, 104.9142), "dest": (11.5916, 104.9351)}
-}
 
 def _build_telemetry_card(route_name, route_data, risk_data, departure_label):
     lvl = risk_data["risk_level"]
@@ -88,71 +82,67 @@ async def reload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setup_bot_commands(app):
     commands = [
         BotCommand("start", "Start assistant & view info"),
-        BotCommand("plan", "Select preset commute route"),
+        BotCommand("plan", "Custom route risk check"),
         BotCommand("map", "Open live GPS & risk map"),
         BotCommand("reload", "Reload persistent menu")
     ]
     await app.bot.set_my_commands(commands)
 
 async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton(f"1. {PRESET_ROUTES['1']['name']}", callback_data="route_1")],
-        [InlineKeyboardButton(f"2. {PRESET_ROUTES['2']['name']}", callback_data="route_2")],
-        [InlineKeyboardButton(f"3. {PRESET_ROUTES['3']['name']}", callback_data="route_3")]
-    ]
-    await update.message.reply_text(
-        "📍 *Select your commute route / សូមជ្រើសរើសផ្លូវធ្វើដំណើរ:*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data.startswith("route_"):
-        route_id = data.split("_")[1]
-        context.user_data["selected_route"] = route_id
-        time_kb = [
-            [
-                InlineKeyboardButton("Now (ភ្លាមៗ)", callback_data="time_0"),
-                InlineKeyboardButton("In 30m (30 នាទី)", callback_data="time_0.5")
-            ],
-            [
-                InlineKeyboardButton("In 1h (1 ម៉ោង)", callback_data="time_1"),
-                InlineKeyboardButton("In 2h (2 ម៉ោង)", callback_data="time_2")
-            ]
-        ]
-        await query.edit_message_text(
-            f"Selected: *{PRESET_ROUTES[route_id]['name']}*\n\n"
-            f"🕒 *When do you plan to depart? / តើអ្នកគ្រោងចេញដំណើរពេលណា?*",
-            reply_markup=InlineKeyboardMarkup(time_kb),
+    args = context.args
+    if not args:
+        map_btn = None
+        if not _is_local_url(WEB_APP_URL):
+            map_btn = InlineKeyboardMarkup([[_build_webapp_btn("🗺 Open Interactive Map", WEB_APP_URL)]])
+        await update.message.reply_text(
+            "📍 *Dynamic Route Planning:*\n\n"
+            "1. Use the interactive map to place your start and destination markers and set departure delay.\n"
+            "2. Or type directly:\n`/plan <Origin> to <Destination> [mins]`\n"
+            "_Example:_ `/plan RUPP to BKK1 30`",
+            reply_markup=map_btn,
             parse_mode="Markdown"
         )
-    elif data.startswith("time_"):
-        hours = float(data.split("_")[1])
-        route_id = context.user_data.get("selected_route", "1")
-        route_info = PRESET_ROUTES[route_id]
-        orig, dest = route_info["orig"], route_info["dest"]
+        return
 
-        routes = get_route(orig[0], orig[1], dest[0], dest[1])
-        if not routes or not routes.get("primary"):
-            await query.edit_message_text("❌ Unable to calculate route at this moment.")
-            return
+    text = " ".join(args)
+    mins = 0
+    if " to " in text.lower():
+        parts = text.lower().split(" to ")
+        orig_query = parts[0].strip()
+        dest_part = parts[1].strip()
+        dest_tokens = dest_part.split()
+        if dest_tokens[-1].isdigit():
+            mins = int(dest_tokens[-1])
+            dest_query = " ".join(dest_tokens[:-1])
+        else:
+            dest_query = dest_part
+    else:
+        orig_query = "Phnom Penh"
+        dest_query = text
 
-        primary = routes["primary"]
-        risk = evaluate_route_risk(primary["coordinates"], hour_offset=int(hours))
-        dep_label = "Immediate departure" if hours == 0 else f"In {int(hours * 60)} minutes"
-        card = _build_telemetry_card(route_info["name"], primary, risk, dep_label)
-        map_url = format_navigation_link(orig[0], orig[1], dest[0], dest[1])
+    orig_matches = search_places(orig_query)
+    dest_matches = search_places(dest_query)
+    if not orig_matches or not dest_matches:
+        await update.message.reply_text("❌ Could not resolve specified location names. Please try again or use /map.")
+        return
 
-        buttons = [[InlineKeyboardButton("🗺 Open Two-Wheeler Navigation", url=map_url)]]
-        if routes.get("alternate"):
-            alt = routes["alternate"]
-            card += f"\n\n💡 *Side-Street Detour Available:* {alt['distance_km']} km (~{alt['duration_min']} min)"
+    o = orig_matches[0]
+    d = dest_matches[0]
+    routes = get_route(o["lat"], o["lng"], d["lat"], d["lng"])
+    if not routes or not routes.get("primary"):
+        await update.message.reply_text("❌ Unable to calculate route for the given points.")
+        return
 
-        await query.edit_message_text(card, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    primary = routes["primary"]
+    hrs = mins / 60.0
+    risk = evaluate_route_risk(primary["coordinates"], hour_offset=int(hrs))
+    dep_label = f"In {mins} minutes" if mins > 0 else "Immediate departure"
+    route_name = f"{o['name'].split(',')[0]} ➔ {d['name'].split(',')[0]}"
+    card = _build_telemetry_card(route_name, primary, risk, dep_label)
+    nav_link = format_navigation_link(o["lat"], o["lng"], d["lat"], d["lng"])
+
+    btns = [[InlineKeyboardButton("🗺 Open Navigation", url=nav_link)]]
+    await update.message.reply_text(card, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
 def main():
     if not TELEGRAM_BOT_TOKEN:

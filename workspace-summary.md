@@ -16,7 +16,7 @@
 - `.github/workflows/deploy.yml`: Automated GitHub Pages deploy workflow (L1-31).
 - `index.html`: Root website entry for repository hosting (L1-150).
 - `static/index.html`: Leaflet GPS web dashboard and risk overlay (L1-150).
-- `bot.py`: Telegram bot with persistent menu commands, local URL fallback handling, `/map`, `/reload` (L1-170).
+- `bot.py`: Dynamic `/plan <origin> to <dest> [mins]`, interactive map link, persistent commands (L1-170).
 - Flow: Browser GPS / Map Click -> `server.py` (`/api/route-risk`) -> `services/routing.py` + `services/risk_evaluator.py` -> Leaflet UI overlay.
 
 ### 3. Data & Conventions
