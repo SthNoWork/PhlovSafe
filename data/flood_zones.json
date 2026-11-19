@@ -1,0 +1,30 @@
+[
+  {
+    "sangkat": "Toul Tom Poung",
+    "streets": ["St 432", "St 450"],
+    "center": {"lat": 11.5375, "lng": 104.9142},
+    "radius_km": 0.8,
+    "risk_level": "High"
+  },
+  {
+    "sangkat": "Boeung Keng Kang",
+    "streets": ["St 63", "St 310"],
+    "center": {"lat": 11.5492, "lng": 104.9255},
+    "radius_km": 0.7,
+    "risk_level": "Moderate"
+  },
+  {
+    "sangkat": "Toul Kork / Depo",
+    "streets": ["Russian Blvd / 271 Intersection", "St 598"],
+    "center": {"lat": 11.5641, "lng": 104.8978},
+    "radius_km": 1.0,
+    "risk_level": "High"
+  },
+  {
+    "sangkat": "Chbar Ampov",
+    "streets": ["National Road 1 / Kbal Thnal"],
+    "center": {"lat": 11.5312, "lng": 104.9410},
+    "radius_km": 0.9,
+    "risk_level": "Moderate"
+  }
+]

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Phnom Penh Commute Co-Pilot</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body, html { height: 100%; display: flex; flex-direction: column; background: #f8fafc; }
+    #header { padding: 12px 16px; background: #1e293b; color: white; display: flex; justify-content: space-between; align-items: center; }
+    #header h1 { font-size: 16px; font-weight: 600; }
+    #controls { padding: 10px 16px; background: white; border-bottom: 1px solid #e2e8f0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    button, select, input { padding: 8px 12px; font-size: 14px; border: 1px solid #cbd5e1; border-radius: 6px; }
+    button { background: #2563eb; color: white; border: none; cursor: pointer; font-weight: 500; }
+    button:hover { background: #1d4ed8; }
+    #map { flex: 1; width: 100%; }
+    #panel { padding: 12px 16px; background: white; border-top: 1px solid #e2e8f0; font-size: 14px; display: none; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-weight: bold; color: white; margin-right: 6px; }
+    .badge-Low { background: #16a34a; }
+    .badge-Moderate { background: #d97706; }
+    .badge-High { background: #dc2626; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-top: 8px; }
+    .card { background: #f1f5f9; padding: 8px; border-radius: 6px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h1>🛵 Phnom Penh Commute & Risk Assistant</h1>
+    <span id="status" style="font-size: 12px; opacity: 0.8;">Click map to pick destination</span>
+  </div>
+  <div id="controls">
+    <button id="btnGps">📍 Locate Me (GPS)</button>
+    <select id="timeOffset">
+      <option value="0">Depart: Now</option>
+      <option value="0.5">Depart: In 30 min</option>
+      <option value="1" selected>Depart: In 1 hour</option>
+      <option value="2">Depart: In 2 hours</option>
+    </select>
+    <input type="text" id="searchInput" placeholder="Search destination (e.g. Aeon, RUPP)" style="flex: 1; min-width: 180px;" />
+    <button id="btnSearch">Search</button>
+  </div>
+  <div id="map"></div>
+  <div id="panel"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([11.5564, 104.9282], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
+
+    let originMarker = L.marker([11.5564, 104.9282], { draggable: true }).addTo(map).bindPopup('Origin (GPS)');
+    let destMarker = null;
+    let primaryLayer = null, altLayer = null;
+
+    fetch('/api/flood-zones').then(r => r.json()).then(zones => {
+      zones.forEach(z => {
+        L.circle([z.center.lat, z.center.lng], {
+          radius: z.radius_km * 1000,
+          color: z.risk_level === 'High' ? '#dc2626' : '#f59e0b',
+          fillColor: z.risk_level === 'High' ? '#ef4444' : '#fbbf24',
+          fillOpacity: 0.25, weight: 1.5
+        }).addTo(map).bindPopup(`<b>Flood Zone:</b> ${z.sangkat}<br>Streets: ${z.streets.join(', ')}`);
+      });
+    });
+
+    function updateRoute() {
+      if (!destMarker) return;
+      const o = originMarker.getLatLng();
+      const d = destMarker.getLatLng();
+      const hrs = document.getElementById('timeOffset').value;
+
+      fetch(`/api/route-risk?orig_lat=${o.lat}&orig_lng=${o.lng}&dest_lat=${d.lat}&dest_lng=${d.lng}&hour_offset=${hrs}`)
+        .then(r => r.json()).then(data => {
+          if (data.error) return alert(data.error);
+
+          if (primaryLayer) map.removeLayer(primaryLayer);
+          if (altLayer) map.removeLayer(altLayer);
+
+          const primCoords = data.primary.coordinates.map(c => [c[1], c[0]]);
+          const riskColor = data.risk.risk_level === 'High' ? '#dc2626' : (data.risk.risk_level === 'Moderate' ? '#d97706' : '#16a34a');
+          primaryLayer = L.polyline(primCoords, { color: riskColor, weight: 5 }).addTo(map);
+          map.fitBounds(primaryLayer.getBounds(), { padding: [40, 40] });
+
+          if (data.alternate) {
+            const altCoords = data.alternate.coordinates.map(c => [c[1], c[0]]);
+            altLayer = L.polyline(altCoords, { color: '#64748b', weight: 4, dashArray: '6, 8' }).addTo(map)
+              .bindPopup(`Side-Street Detour: ${data.alternate.distance_km}km, ${data.alternate.duration_min}min`);
+          }
+
+          const p = document.getElementById('panel');
+          p.style.display = 'block';
+          p.innerHTML = `
+            <div>
+              <span class="badge badge-${data.risk.risk_level}">${data.risk.risk_level.toUpperCase()} RISK</span>
+              <b>${data.primary.distance_km} km | ~${data.primary.duration_min} mins</b>
+              <a href="${data.navigation_url}" target="_blank" style="float: right; color: #2563eb; font-weight: 500;">Open Google Maps ↗</a>
+            </div>
+            <div class="grid">
+              <div class="card">🌧 <b>Rain:</b> ${data.risk.weather.rain_prob}% (${data.risk.weather.rain_mm} mm)</div>
+              <div class="card">💨 <b>AQI:</b> ${data.risk.aqi.aqi} (PM2.5: ${data.risk.aqi.pm25})</div>
+              <div class="card">🚦 <b>Traffic:</b> ${data.risk.traffic.status}</div>
+              <div class="card">⚠️ <b>Flood Zones:</b> ${data.risk.hit_flood_zones.length ? data.risk.hit_flood_zones.join(', ') : 'None'}</div>
+            </div>
+            <div style="margin-top: 6px; font-size: 13px; color: #475569;">
+              ${data.risk.reasons.map(r => `• ${r}`).join('<br>')}
+            </div>
+          `;
+        });
+    }
+
+    document.getElementById('btnGps').onclick = () => {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(pos => {
+          const lat = pos.coords.latitude, lng = pos.coords.longitude;
+          originMarker.setLatLng([lat, lng]);
+          map.setView([lat, lng], 14);
+          updateRoute();
+        }, () => alert('Unable to retrieve GPS position.'));
+      }
+    };
+
+    map.on('click', e => {
+      if (!destMarker) {
+        destMarker = L.marker(e.latlng, { draggable: true }).addTo(map).bindPopup('Destination');
+        destMarker.on('dragend', updateRoute);
+      } else {
+        destMarker.setLatLng(e.latlng);
+      }
+      updateRoute();
+    });
+
+    document.getElementById('timeOffset').onchange = updateRoute;
+    document.getElementById('btnSearch').onclick = () => {
+      const q = document.getElementById('searchInput').value.trim();
+      if (!q) return;
+      fetch(`/api/search?q=${encodeURIComponent(q)}`).then(r => r.json()).then(res => {
+        if (!res.length) return alert('No locations found in Phnom Penh');
+        const item = res[0];
+        if (!destMarker) {
+          destMarker = L.marker([item.lat, item.lng], { draggable: true }).addTo(map).bindPopup(item.name);
+          destMarker.on('dragend', updateRoute);
+        } else {
+          destMarker.setLatLng([item.lat, item.lng]);
+        }
+        updateRoute();
+      });
+    };
+  </script>
+</body>
+</html>
