@@ -13,6 +13,7 @@
 - `services/traffic.py`: TomTom traffic flow check with fallback (L1-40).
 - `services/risk_evaluator.py`: Multi-factor risk evaluator fusing weather, flood zones, traffic (L1-67).
 - `server.py`: Flask web and API server (L1-66).
+- `.github/workflows/deploy.yml`: Automated GitHub Pages deploy workflow (L1-31).
 - `index.html`: Root website entry for repository hosting (L1-150).
 - `static/index.html`: Leaflet GPS web dashboard and risk overlay (L1-150).
 - `bot.py`: Telegram bot with persistent menu commands, local URL fallback handling, `/map`, `/reload` (L1-170).
