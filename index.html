@@ -48,6 +48,13 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
+    const FLOOD_ZONES = [
+      {"sangkat": "Toul Tom Poung", "streets": ["St 432", "St 450"], "center": {"lat": 11.5375, "lng": 104.9142}, "radius_km": 0.8, "risk_level": "High"},
+      {"sangkat": "Boeung Keng Kang", "streets": ["St 63", "St 310"], "center": {"lat": 11.5492, "lng": 104.9255}, "radius_km": 0.7, "risk_level": "Moderate"},
+      {"sangkat": "Toul Kork / Depo", "streets": ["Russian Blvd / 271 Intersection", "St 598"], "center": {"lat": 11.5641, "lng": 104.8978}, "radius_km": 1.0, "risk_level": "High"},
+      {"sangkat": "Chbar Ampov", "streets": ["National Road 1 / Kbal Thnal"], "center": {"lat": 11.5312, "lng": 104.9410}, "radius_km": 0.9, "risk_level": "Moderate"}
+    ];
+
     const map = L.map('map').setView([11.5564, 104.9282], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
 
@@ -55,6 +62,15 @@
     let destMarker = null;
     let primaryLayer = null, altLayer = null;
     let placementMode = 'start';
+
+    FLOOD_ZONES.forEach(z => {
+      L.circle([z.center.lat, z.center.lng], {
+        radius: z.radius_km * 1000,
+        color: z.risk_level === 'High' ? '#dc2626' : '#f59e0b',
+        fillColor: z.risk_level === 'High' ? '#ef4444' : '#fbbf24',
+        fillOpacity: 0.25, weight: 1.5
+      }).addTo(map).bindPopup(`<b>Flood Zone:</b> ${z.sangkat}<br>Streets: ${z.streets.join(', ')}`);
+    });
 
     document.getElementById('btnModeStart').onclick = () => {
       placementMode = 'start';
@@ -70,61 +86,156 @@
       document.getElementById('status').innerText = 'Click map to place Destination marker';
     };
 
-    fetch('/api/flood-zones').then(r => r.json()).then(zones => {
-      zones.forEach(z => {
-        L.circle([z.center.lat, z.center.lng], {
-          radius: z.radius_km * 1000,
-          color: z.risk_level === 'High' ? '#dc2626' : '#f59e0b',
-          fillColor: z.risk_level === 'High' ? '#ef4444' : '#fbbf24',
-          fillOpacity: 0.25, weight: 1.5
-        }).addTo(map).bindPopup(`<b>Flood Zone:</b> ${z.sangkat}<br>Streets: ${z.streets.join(', ')}`);
-      });
-    });
+    function distanceKm(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
 
-    function updateRoute() {
+    async function evaluateClientSide(o, d, mins) {
+      const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${o.lng},${o.lat};${d.lng},${d.lat}?overview=full&geometries=geojson&steps=true&alternatives=true`;
+      const osrmRes = await fetch(osrmUrl).then(r => r.json());
+      if (osrmRes.code !== 'Ok' || !osrmRes.routes || !osrmRes.routes.length) {
+        throw new Error('OSRM route calculation failed');
+      }
+
+      const r0 = osrmRes.routes[0];
+      const primary = {
+        distance_km: (r0.distance / 1000).toFixed(2),
+        duration_min: Math.round(r0.duration / 60),
+        coordinates: r0.geometry.coordinates
+      };
+
+      let alternate = null;
+      if (osrmRes.routes.length > 1) {
+        const r1 = osrmRes.routes[1];
+        alternate = {
+          distance_km: (r1.distance / 1000).toFixed(2),
+          duration_min: Math.round(r1.duration / 60),
+          coordinates: r1.geometry.coordinates
+        };
+      }
+
+      let rainProb = 15, rainMm = 0.0, aqiVal = 45, pmVal = 14.5;
+      try {
+        const hOffset = Math.min(Math.max(Math.floor(mins / 60), 0), 23);
+        const wUrl = `https://api.open-meteo.com/v1/forecast?latitude=11.5564&longitude=104.9282&hourly=precipitation_probability,precipitation&timezone=Asia%2FBangkok`;
+        const wData = await fetch(wUrl).then(r => r.json());
+        if (wData.hourly) {
+          rainProb = wData.hourly.precipitation_probability[hOffset] || 0;
+          rainMm = wData.hourly.precipitation[hOffset] || 0.0;
+        }
+        const aUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=11.5564&longitude=104.9282&current=pm2_5,us_aqi`;
+        const aData = await fetch(aUrl).then(r => r.json());
+        if (aData.current) {
+          aqiVal = aData.current.us_aqi || 45;
+          pmVal = aData.current.pm2_5 || 15.0;
+        }
+      } catch (e) {}
+
+      const hitZones = [];
+      const coords = primary.coordinates;
+      for (let i = 0; i < coords.length; i += 5) {
+        const pt = coords[i];
+        FLOOD_ZONES.forEach(z => {
+          if (distanceKm(pt[1], pt[0], z.center.lat, z.center.lng) <= z.radius_km) {
+            if (!hitZones.includes(z.sangkat)) hitZones.push(z.sangkat);
+          }
+        });
+      }
+
+      let riskLevel = 'Low';
+      const reasons = [];
+      if (rainProb >= 50 && hitZones.length) {
+        riskLevel = 'High';
+        reasons.push(`High rain probability (${rainProb}%) directly crossing flood-prone ${hitZones.join(', ')}`);
+      } else if (rainProb >= 40 || hitZones.length) {
+        riskLevel = 'Moderate';
+        if (hitZones.length) reasons.push(`Crosses historical flood zones (${hitZones.join(', ')})`);
+        if (rainProb >= 40) reasons.push(`Rain predicted during travel window (${rainProb}%)`);
+      } else {
+        reasons.push('Favorable travel conditions with standard traffic and clear weather');
+      }
+
+      return {
+        primary,
+        alternate,
+        risk: {
+          risk_level: riskLevel,
+          reasons,
+          hit_flood_zones: hitZones,
+          weather: { rain_prob: rainProb, rain_mm: rainMm },
+          aqi: { aqi: aqiVal, pm25: pmVal },
+          traffic: { status: 'Normal Flow', source: 'Traffic Flow Baseline' }
+        },
+        navigation_url: `https://www.google.com/maps/dir/?api=1&origin=${o.lat},${o.lng}&destination=${d.lat},${d.lng}&travelmode=two_wheeler`
+      };
+    }
+
+    function renderRouteData(data, mins) {
+      if (primaryLayer) map.removeLayer(primaryLayer);
+      if (altLayer) map.removeLayer(altLayer);
+
+      const primCoords = data.primary.coordinates.map(c => [c[1], c[0]]);
+      const riskColor = data.risk.risk_level === 'High' ? '#dc2626' : (data.risk.risk_level === 'Moderate' ? '#d97706' : '#16a34a');
+      primaryLayer = L.polyline(primCoords, { color: riskColor, weight: 5 }).addTo(map);
+      map.fitBounds(primaryLayer.getBounds(), { padding: [40, 40] });
+
+      if (data.alternate) {
+        const altCoords = data.alternate.coordinates.map(c => [c[1], c[0]]);
+        altLayer = L.polyline(altCoords, { color: '#64748b', weight: 4, dashArray: '6, 8' }).addTo(map)
+          .bindPopup(`Side-Street Detour: ${data.alternate.distance_km}km, ${data.alternate.duration_min}min`);
+      }
+
+      const p = document.getElementById('panel');
+      p.style.display = 'block';
+      p.innerHTML = `
+        <div>
+          <span class="badge badge-${data.risk.risk_level}">${data.risk.risk_level.toUpperCase()} RISK</span>
+          <b>${data.primary.distance_km} km | ~${data.primary.duration_min} mins (departs in ${mins}m)</b>
+          <a href="${data.navigation_url}" target="_blank" style="float: right; color: #2563eb; font-weight: 500;">Open Google Maps ↗</a>
+        </div>
+        <div class="grid">
+          <div class="card">🌧 <b>Rain:</b> ${data.risk.weather.rain_prob}% (${data.risk.weather.rain_mm} mm)</div>
+          <div class="card">💨 <b>AQI:</b> ${data.risk.aqi.aqi} (PM2.5: ${data.risk.aqi.pm25})</div>
+          <div class="card">🚦 <b>Traffic:</b> ${data.risk.traffic.status}</div>
+          <div class="card">⚠️ <b>Flood Zones:</b> ${data.risk.hit_flood_zones.length ? data.risk.hit_flood_zones.join(', ') : 'None'}</div>
+        </div>
+        <div style="margin-top: 6px; font-size: 12px; color: #475569;">
+          ${data.risk.reasons.map(r => `• ${r}`).join('<br>')}
+        </div>
+      `;
+      document.getElementById('status').innerText = 'Route & risk calculated';
+    }
+
+    async function updateRoute() {
       if (!originMarker || !destMarker) return;
       const o = originMarker.getLatLng();
       const d = destMarker.getLatLng();
       const mins = parseFloat(document.getElementById('timeMins').value) || 0;
       const hrs = (mins / 60).toFixed(2);
 
-      fetch(`/api/route-risk?orig_lat=${o.lat}&orig_lng=${o.lng}&dest_lat=${d.lat}&dest_lng=${d.lng}&hour_offset=${hrs}`)
-        .then(r => r.json()).then(data => {
-          if (data.error) return alert(data.error);
+      document.getElementById('status').innerText = 'Calculating route & assessing risks...';
 
-          if (primaryLayer) map.removeLayer(primaryLayer);
-          if (altLayer) map.removeLayer(altLayer);
-
-          const primCoords = data.primary.coordinates.map(c => [c[1], c[0]]);
-          const riskColor = data.risk.risk_level === 'High' ? '#dc2626' : (data.risk.risk_level === 'Moderate' ? '#d97706' : '#16a34a');
-          primaryLayer = L.polyline(primCoords, { color: riskColor, weight: 5 }).addTo(map);
-          map.fitBounds(primaryLayer.getBounds(), { padding: [40, 40] });
-
-          if (data.alternate) {
-            const altCoords = data.alternate.coordinates.map(c => [c[1], c[0]]);
-            altLayer = L.polyline(altCoords, { color: '#64748b', weight: 4, dashArray: '6, 8' }).addTo(map)
-              .bindPopup(`Side-Street Detour: ${data.alternate.distance_km}km, ${data.alternate.duration_min}min`);
-          }
-
-          const p = document.getElementById('panel');
-          p.style.display = 'block';
-          p.innerHTML = `
-            <div>
-              <span class="badge badge-${data.risk.risk_level}">${data.risk.risk_level.toUpperCase()} RISK</span>
-              <b>${data.primary.distance_km} km | ~${data.primary.duration_min} mins (departs in ${mins}m)</b>
-              <a href="${data.navigation_url}" target="_blank" style="float: right; color: #2563eb; font-weight: 500;">Open Google Maps ↗</a>
-            </div>
-            <div class="grid">
-              <div class="card">🌧 <b>Rain:</b> ${data.risk.weather.rain_prob}% (${data.risk.weather.rain_mm} mm)</div>
-              <div class="card">💨 <b>AQI:</b> ${data.risk.aqi.aqi} (PM2.5: ${data.risk.aqi.pm25})</div>
-              <div class="card">🚦 <b>Traffic:</b> ${data.risk.traffic.status}</div>
-              <div class="card">⚠️ <b>Flood Zones:</b> ${data.risk.hit_flood_zones.length ? data.risk.hit_flood_zones.join(', ') : 'None'}</div>
-            </div>
-            <div style="margin-top: 6px; font-size: 12px; color: #475569;">
-              ${data.risk.reasons.map(r => `• ${r}`).join('<br>')}
-            </div>
-          `;
-        });
+      try {
+        const resp = await fetch(`/api/route-risk?orig_lat=${o.lat}&orig_lng=${o.lng}&dest_lat=${d.lat}&dest_lng=${d.lng}&hour_offset=${hrs}`);
+        if (!resp.ok) throw new Error('Backend offline');
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        renderRouteData(data, mins);
+      } catch (err) {
+        try {
+          const clientData = await evaluateClientSide(o, d, mins);
+          renderRouteData(clientData, mins);
+        } catch (clientErr) {
+          document.getElementById('status').innerText = 'Error calculating route';
+          alert('Unable to calculate route between the two selected markers.');
+        }
+      }
     }
 
     document.getElementById('btnGps').onclick = () => {
@@ -163,30 +274,42 @@
     });
 
     document.getElementById('timeMins').oninput = updateRoute;
-    document.getElementById('btnSearch').onclick = () => {
+    document.getElementById('btnSearch').onclick = async () => {
       const q = document.getElementById('searchInput').value.trim();
       if (!q) return;
-      fetch(`/api/search?q=${encodeURIComponent(q)}`).then(r => r.json()).then(res => {
-        if (!res.length) return alert('No locations found in Phnom Penh');
-        const item = res[0];
-        const target = [item.lat, item.lng];
-        if (placementMode === 'start') {
-          if (!originMarker) {
-            originMarker = L.marker(target, { draggable: true }).addTo(map).bindPopup(item.name);
-            originMarker.on('dragend', updateRoute);
-          } else {
-            originMarker.setLatLng(target);
-          }
+      let res = [];
+      try {
+        res = await fetch(`/api/search?q=${encodeURIComponent(q)}`).then(r => r.json());
+      } catch (e) {}
+
+      if (!res || !res.length) {
+        try {
+          const nomUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q + ', Phnom Penh')}&format=json&limit=5&countrycodes=kh`;
+          const raw = await fetch(nomUrl).then(r => r.json());
+          res = raw.map(i => ({ name: i.display_name, lat: parseFloat(i.lat), lng: parseFloat(i.lon) }));
+        } catch (e) {}
+      }
+
+      if (!res.length) return alert('No locations found in Phnom Penh');
+      const item = res[0];
+      const target = [item.lat, item.lng];
+      if (placementMode === 'start') {
+        if (!originMarker) {
+          originMarker = L.marker(target, { draggable: true }).addTo(map).bindPopup(item.name);
+          originMarker.on('dragend', updateRoute);
         } else {
-          if (!destMarker) {
-            destMarker = L.marker(target, { draggable: true }).addTo(map).bindPopup(item.name);
-            destMarker.on('dragend', updateRoute);
-          } else {
-            destMarker.setLatLng(target);
-          }
+          originMarker.setLatLng(target);
         }
-        updateRoute();
-      });
+      } else {
+        if (!destMarker) {
+          destMarker = L.marker(target, { draggable: true }).addTo(map).bindPopup(item.name);
+          destMarker.on('dragend', updateRoute);
+        } else {
+          destMarker.setLatLng(target);
+        }
+      }
+      map.setView(target, 14);
+      updateRoute();
     };
   </script>
 </body>

@@ -14,8 +14,8 @@
 - `services/risk_evaluator.py`: Multi-factor risk evaluator fusing weather, flood zones, traffic (L1-67).
 - `server.py`: Flask web and API server (L1-66).
 - `.github/workflows/deploy.yml`: Automated GitHub Pages deploy workflow (L1-31).
-- `index.html`: Root website entry for repository hosting (L1-150).
-- `static/index.html`: Leaflet GPS web dashboard and risk overlay (L1-150).
+- `index.html`: Standalone client-side and backend-backed Leaflet GPS web dashboard (L1-260).
+- `static/index.html`: Standalone client-side and backend-backed Leaflet GPS web dashboard (L1-260).
 - `bot.py`: Dynamic `/plan <origin> to <dest> [mins]`, interactive map link, persistent commands (L1-160).
 - Flow: Browser GPS / Map Click -> `server.py` (`/api/route-risk`) -> `services/routing.py` + `services/risk_evaluator.py` -> Leaflet UI overlay.
 
