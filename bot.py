@@ -13,7 +13,7 @@ if req_file.exists():
 
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, WebAppInfo
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from config import TELEGRAM_BOT_TOKEN, WEB_APP_URL
 from services.routing import get_route, search_places, format_navigation_link
 from services.risk_evaluator import evaluate_route_risk
@@ -154,7 +154,6 @@ def main():
     app.add_handler(CommandHandler("plan", plan_command))
     app.add_handler(CommandHandler("map", map_command))
     app.add_handler(CommandHandler("reload", reload_command))
-    app.add_handler(CallbackQueryHandler(handle_callback))
     app.run_polling()
 
 if __name__ == "__main__":
